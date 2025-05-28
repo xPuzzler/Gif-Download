@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenSea Animation Downloader</title>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .loader { animation: spin 1s linear infinite; }
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        .gradient-bg { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useRef, useEffect } = React;
+
+        const OpenSeaDownloader = () => {
+            const [url, setUrl] = useState('');
+            const [duration, setDuration] = useState(10);
+            const [isProcessing, setIsProcessing] = useState(false);
+            const [previewUrl, setPreviewUrl] = useState('');
+            const [mediaType, setMediaType] = useState('');
+            const [error, setError] = useState('');
+            const [success, setSuccess] = useState('');
+            const [nftData, setNftData] = useState(null);
+            const videoRef = useRef(null);
+            const canvasRef = useRef(null);
+
+            const OPENSEA_API_KEY = 'b82aabacf3c74966aa4ffe5a02e94e69'; // Replace with your actual API key
+
+            const loadOpenSeaContent = async (openSeaUrl) => {
+                try {
+                    setError('');
+                    setSuccess('Loading NFT data...');
+                    setIsProcessing(true);
+                    
+                    // Extract NFT details from URL
+                    const urlParts = openSeaUrl.split('/');
+                    const tokenId = urlParts[urlParts.length - 1];
+                    const contractAddress = urlParts[urlParts.length - 2];
+                    const chain = urlParts[urlParts.length - 3];
+                    
+                    if (OPENSEA_API_KEY === 'OPENSEA_API_KEY') {
+                        setError('Please add your OpenSea API key in the code');
+                        setIsProcessing(false);
+                        return;
+                    }
+                    
+                    // OpenSea API v2 endpoint
+                    const apiUrl = `https://api.opensea.io/api/v2/chain/${chain}/contract/${contractAddress}/nfts/${tokenId}`;
+                    
+                    const response = await fetch(apiUrl, {
+                        method: 'GET',
+                        headers: {
+                            'X-API-KEY': OPENSEA_API_KEY,
+                            'Accept': 'application/json'
+                        }
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error(`OpenSea API Error: ${response.status} ${response.statusText}`);
+                    }
+                    
+                    const data = await response.json();
+                    const nft = data.nft;
+                    
+                    if (!nft) {
+                        throw new Error('NFT not found');
+                    }
+                    
+                    // Check for animation URL (video/gif)
+                    let mediaUrl = null;
+                    let mediaType = 'image';
+                    
+                    if (nft.animation_url) {
+                        mediaUrl = nft.animation_url;
+                        const urlLower = nft.animation_url.toLowerCase();
+                        if (urlLower.includes('.mp4') || urlLower.includes('.webm') || urlLower.includes('.mov')) {
+                            mediaType = 'video';
+                        } else if (urlLower.includes('.gif')) {
+                            mediaType = 'gif';
+                        } else {
+                            mediaType = 'animation';
+                        }
+                    } else if (nft.image_url) {
+                        mediaUrl = nft.image_url;
+                        if (nft.image_url.toLowerCase().includes('.gif')) {
+                            mediaType = 'gif';
+                        }
+                    }
+                    
+                    if (!mediaUrl) {
+                        throw new Error('No media found for this NFT');
+                    }
+                    
+                    setPreviewUrl(mediaUrl);
+                    setMediaType(mediaType);
+                    setNftData(nft);
+                    setSuccess(`NFT loaded: ${nft.name || 'Unnamed'} (${mediaType})`);
+                    
+                } catch (err) {
+                    setError('Error: ' + err.message);
+                    console.error('OpenSea API Error:', err);
+                } finally {
+                    setIsProcessing(false);
+                }
+            };
+
+            const handleUrlSubmit = async () => {
+                if (!url.trim()) {
+                    setError('Please enter an OpenSea URL');
+                    return;
+                }
+                
+                if (!url.includes('opensea.io')) {
+                    setError('Please enter a valid OpenSea URL');
+                    return;
+                }
+                
+                await loadOpenSeaContent(url);
+            };
+
+            const downloadDirectly = async () => {
+                try {
+                    setIsProcessing(true);
+                    setSuccess('Downloading file...');
+                    
+                    const response = await fetch(previewUrl);
+                    const blob = await response.blob();
+                    
+                    const fileExtension = mediaType === 'video' ? 'mp4' : 
+                                        mediaType === 'gif' ? 'gif' : 
+                                        'png';
+                    
+                    const filename = `${nftData?.name || 'nft'}_${Date.now()}.${fileExtension}`;
+                    downloadFile(blob, filename);
+                    
+                    setSuccess('File downloaded successfully!');
+                } catch (err) {
+                    setError('Direct download failed, trying capture method...');
+                    await captureAnimation();
+                } finally {
+                    setIsProcessing(false);
+                }
+            };
+
+            const captureAnimation = async () => {
+                try {
+                    setIsProcessing(true);
+                    const canvas = canvasRef.current;
+                    
+                    if (mediaType === 'video' || mediaType === 'animation') {
+                        await captureVideo();
+                    } else if (mediaType === 'gif') {
+                        await captureGif();
+                    } else {
+                        await captureImage();
+                    }
+                    
+                } catch (err) {
+                    setError('Capture failed: ' + err.message);
+                } finally {
+                    setIsProcessing(false);
+                }
+            };
+
+            const captureVideo = async () => {
+                const video = videoRef.current;
+                const canvas = canvasRef.current;
+                
+                if (!video || !canvas) {
+                    throw new Error('Video or canvas not available');
+                }
+
+                // Wait for video metadata to load
+                if (video.readyState < 2) {
+                    await new Promise((resolve) => {
+                        video.addEventListener('loadedmetadata', resolve, { once: true });
+                    });
+                }
+
+                // Set canvas dimensions to match video
+                canvas.width = video.videoWidth || 640;
+                canvas.height = video.videoHeight || 360;
+                
+                const ctx = canvas.getContext('2d');
+                const stream = canvas.captureStream(30);
+                const mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+                const chunks = [];
+
+                mediaRecorder.ondataavailable = (event) => {
+                    if (event.data.size > 0) {
+                        chunks.push(event.data);
+                    }
+                };
+
+                mediaRecorder.onstop = () => {
+                    const blob = new Blob(chunks, { type: 'video/webm' });
+                    const filename = `${nftData?.name || 'nft'}_${Date.now()}.webm`;
+                    downloadFile(blob, filename);
+                    setSuccess('Video captured and downloaded successfully!');
+                };
+
+                // Start recording
+                mediaRecorder.start();
+                video.currentTime = 0;
+                video.play();
+                
+                setSuccess(`Capturing video for ${duration} seconds...`);
+
+                // Draw video frames to canvas
+                let isRecording = true;
+                const drawFrame = () => {
+                    if (!isRecording) return;
+                    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                    requestAnimationFrame(drawFrame);
+                };
+                drawFrame();
+
+                // Stop after duration
+                setTimeout(() => {
+                    isRecording = false;
+                    video.pause();
+                    if (mediaRecorder.state === 'recording') {
+                        mediaRecorder.stop();
+                    }
+                }, duration * 1000);
+            };
+
+            const captureGif = async () => {
+                const canvas = canvasRef.current;
+                const ctx = canvas.getContext('2d');
+                
+                // Create temporary image to get dimensions
+                const img = new Image();
+                img.crossOrigin = 'anonymous';
+                
+                await new Promise((resolve, reject) => {
+                    img.onload = resolve;
+                    img.onerror = reject;
+                    img.src = previewUrl;
+                });
+
+                canvas.width = img.naturalWidth;
+                canvas.height = img.naturalHeight;
+                
+                ctx.drawImage(img, 0, 0);
+                
+                canvas.toBlob((blob) => {
+                    const filename = `${nftData?.name || 'nft'}_${Date.now()}.png`;
+                    downloadFile(blob, filename);
+                    setSuccess('GIF captured as image!');
+                });
+            };
+
+            const captureImage = async () => {
+                const canvas = canvasRef.current;
+                const ctx = canvas.getContext('2d');
+                
+                const img = new Image();
+                img.crossOrigin = 'anonymous';
+                
+                await new Promise((resolve, reject) => {
+                    img.onload = resolve;
+                    img.onerror = reject;
+                    img.src = previewUrl;
+                });
+
+                canvas.width = img.naturalWidth;
+                canvas.height = img.naturalHeight;
+                
+                ctx.drawImage(img, 0, 0);
+                
+                canvas.toBlob((blob) => {
+                    const filename = `${nftData?.name || 'nft'}_${Date.now()}.png`;
+                    downloadFile(blob, filename);
+                    setSuccess('Image downloaded successfully!');
+                });
+            };
+
+            const downloadFile = (blob, filename) => {
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            };
+
+            return (
+                <div className="min-h-screen gradient-bg p-4">
+                    <div className="max-w-4xl mx-auto">
+                        <div className="bg-white rounded-2xl shadow-2xl overflow-hidden">
+                            {/* Header */}
+                            <div className="bg-gradient-to-r from-purple-600 to-blue-600 p-6">
+                                <h1 className="text-3xl font-bold text-white text-center">
+                                    🎨 OpenSea Animation Downloader
+                                </h1>
+                                <p className="text-purple-100 text-center mt-2">
+                                    Download NFT animations and images directly
+                                </p>
+                            </div>
+
+                            <div className="p-6 space-y-6">
+                                {/* URL Input */}
+                                <div className="bg-gray-50 rounded-xl p-6">
+                                    <h2 className="text-xl font-semibold mb-4 flex items-center">
+                                        🔗 Enter OpenSea URL
+                                    </h2>
+                                    <div className="flex gap-3">
+                                        <input
+                                            type="url"
+                                            value={url}
+                                            onChange={(e) => setUrl(e.target.value)}
+                                            placeholder="https://opensea.io/assets/..."
+                                            className="flex-1 p-4 border-2 border-gray-200 rounded-xl focus:border-purple-500 focus:ring-2 focus:ring-purple-200 transition-all"
+                                            onKeyPress={(e) => e.key === 'Enter' && handleUrlSubmit()}
+                                        />
+                                        <button
+                                            onClick={handleUrlSubmit}
+                                            disabled={isProcessing}
+                                            className="px-6 py-4 bg-purple-600 text-white rounded-xl hover:bg-purple-700 disabled:opacity-50 font-semibold transition-all"
+                                        >
+                                            {isProcessing ? '⏳' : '🔍'} Load
+                                        </button>
+                                    </div>
+                                    
+                                    <div className="mt-4">
+                                        <button
+                                            onClick={() => setUrl('https://opensea.io/assets/base/0xad0b08874ede845d09c4bf5f13c3bb3650720c34/1535')}
+                                            className="text-purple-600 hover:text-purple-800 text-sm font-medium"
+                                        >
+                                            📎 Use Example URL
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {/* Duration for Video Capture */}
+                                {mediaType === 'video' && (
+                                    <div className="bg-gray-50 rounded-xl p-6">
+                                        <h2 className="text-xl font-semibold mb-4 flex items-center">
+                                            ⏱️ Video Capture Duration
+                                        </h2>
+                                        <div className="flex gap-3">
+                                            {[5, 10, 15, 20, 30].map((sec) => (
+                                                <button
+                                                    key={sec}
+                                                    onClick={() => setDuration(sec)}
+                                                    className={`px-4 py-2 rounded-lg font-medium transition-all ${
+                                                        duration === sec
+                                                            ? 'bg-purple-600 text-white shadow-lg'
+                                                            : 'bg-white text-gray-700 hover:bg-gray-100 border-2 border-gray-200'
+                                                    }`}
+                                                >
+                                                    {sec}s
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Preview */}
+                                {previewUrl && (
+                                    <div className="bg-gray-50 rounded-xl p-6">
+                                        <h2 className="text-xl font-semibold mb-4 flex items-center">
+                                            👀 Preview
+                                        </h2>
+                                        <div className="bg-white rounded-lg p-4 flex items-center justify-center min-h-64">
+                                            {mediaType === 'video' || mediaType === 'animation' ? (
+                                                <video
+                                                    ref={videoRef}
+                                                    src={previewUrl}
+                                                    controls
+                                                    crossOrigin="anonymous"
+                                                    className="max-w-full max-h-96 rounded-lg shadow-lg"
+                                                    onLoadedMetadata={() => setSuccess('Video loaded successfully!')}
+                                                    onError={() => setError('Failed to load video - will use capture method')}
+                                                />
+                                            ) : mediaType === 'gif' ? (
+                                                <img
+                                                    src={previewUrl}
+                                                    alt="NFT Animation"
+                                                    className="max-w-full max-h-96 rounded-lg shadow-lg"
+                                                    onLoad={() => setSuccess('GIF loaded successfully!')}
+                                                    onError={() => setError('Failed to load GIF')}
+                                                />
+                                            ) : (
+                                                <img
+                                                    src={previewUrl}
+                                                    alt="NFT Image"
+                                                    className="max-w-full max-h-96 rounded-lg shadow-lg"
+                                                    onLoad={() => setSuccess('Image loaded successfully!')}
+                                                    onError={() => setError('Failed to load image')}
+                                                />
+                                            )}
+                                        </div>
+                                        <canvas ref={canvasRef} style={{ display: 'none' }} />
+                                    </div>
+                                )}
+
+                                {/* Download Buttons */}
+                                {previewUrl && (
+                                    <div className="bg-gradient-to-r from-green-50 to-blue-50 rounded-xl p-6">
+                                        <h2 className="text-xl font-semibold mb-4 flex items-center">
+                                            💾 Download Options
+                                        </h2>
+                                        <div className="flex gap-4 flex-wrap">
+                                            <button
+                                                onClick={downloadDirectly}
+                                                disabled={isProcessing}
+                                                className="flex items-center gap-2 px-6 py-3 bg-green-600 text-white rounded-xl hover:bg-green-700 disabled:opacity-50 font-semibold transition-all shadow-lg"
+                                            >
+                                                {isProcessing ? (
+                                                    <>
+                                                        <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full loader"></div>
+                                                        Processing...
+                                                    </>
+                                                ) : (
+                                                    <>
+                                                        ⬇️ Direct Download
+                                                    </>
+                                                )}
+                                            </button>
+                                            
+                                            <button
+                                                onClick={captureAnimation}
+                                                disabled={isProcessing}
+                                                className="flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:opacity-50 font-semibold transition-all shadow-lg"
+                                            >
+                                                {isProcessing ? (
+                                                    <>
+                                                        <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full loader"></div>
+                                                        Capturing...
+                                                    </>
+                                                ) : (
+                                                    <>
+                                                        📹 Capture & Download
+                                                    </>
+                                                )}
+                                            </button>
+                                        </div>
+                                        
+                                        <div className="mt-4 text-sm text-gray-600">
+                                            <p><strong>Direct Download:</strong> Attempts to download the original file</p>
+                                            <p><strong>Capture:</strong> Records/captures the animation if direct download fails</p>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Messages */}
+                                {error && (
+                                    <div className="bg-red-50 border-l-4 border-red-500 rounded-lg p-4">
+                                        <div className="flex items-center">
+                                            <span className="text-red-500 text-xl mr-2">❌</span>
+                                            <p className="text-red-700 font-medium">{error}</p>
+                                        </div>
+                                    </div>
+                                )}
+                                
+                                {success && (
+                                    <div className="bg-green-50 border-l-4 border-green-500 rounded-lg p-4">
+                                        <div className="flex items-center">
+                                            <span className="text-green-500 text-xl mr-2">✅</span>
+                                            <p className="text-green-700 font-medium">{success}</p>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Instructions */}
+                                <div className="bg-blue-50 rounded-xl p-6">
+                                    <h2 className="text-xl font-semibold mb-4 text-blue-800 flex items-center">
+                                        📋 How to Use
+                                    </h2>
+                                    <div className="text-blue-700 space-y-3">
+                                        <div className="flex items-start gap-3">
+                                            <span className="bg-blue-200 text-blue-800 rounded-full w-6 h-6 flex items-center justify-center text-sm font-bold flex-shrink-0 mt-0.5">2</span>
+                                            <p><strong>Enter URL:</strong> Paste any OpenSea NFT URL</p>
+                                        </div>
+                                        <div className="flex items-start gap-3">
+                                            <span className="bg-blue-200 text-blue-800 rounded-full w-6 h-6 flex items-center justify-center text-sm font-bold flex-shrink-0 mt-0.5">3</span>
+                                            <p><strong>Download:</strong> Choose direct download or capture method</p>
+                                        </div>
+                                        <div className="flex items-start gap-3">
+                                            <span className="bg-blue-200 text-blue-800 rounded-full w-6 h-6 flex items-center justify-center text-sm font-bold flex-shrink-0 mt-0.5">4</span>
+                                            <p><strong>Auto-sizing:</strong> Canvas automatically adjusts to media dimensions</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        ReactDOM.render(<OpenSeaDownloader />, document.getElementById('root'));
+    </script>
+</body>
+</html>
